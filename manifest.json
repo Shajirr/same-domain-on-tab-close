@@ -1,0 +1,43 @@
+{
+  "manifest_version": 2,
+  "name": "Same Domain On Tab Close",
+  "version": "2026.3.8.1",
+  "description": "After you close a tab, switches to another tab from the same domain according to user-defined rules.",
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "@same-domain-on-tab-close.shajirr",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+
+  "permissions": ["tabs", "storage", "sessions", "menus"],
+
+  "background": {
+    "scripts": ["background.js"]
+  },
+
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+
+  "browser_action": {
+    "default_icon": {
+      "24": "icon.svg",
+      "32": "icon.svg",
+      "48": "icon.svg",
+      "64": "icon.svg"
+    },
+    "default_title": "Same Domain Tab Focus: ON"
+  },
+
+  "icons": {
+    "24": "icon.svg",
+    "32": "icon.svg",
+    "48": "icon.svg",
+    "64": "icon.svg"
+  }
+}

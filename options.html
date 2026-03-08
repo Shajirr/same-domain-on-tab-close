@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Same Domain Tab Focus - Settings</title>
+    <link rel="stylesheet" href="options.css">
+</head>
+<body>
+<div class="container">
+    <h2>Tab Switch Priority Rules</h2>
+    <p class="description">
+        Drag and drop to reorder the rules.<br>
+        When closing a tab, the addon will evaluate these from top to bottom.<br>
+        If all rules fail, the rules are evaluated again, but without the same domain requirement.<br>
+        If there are no tabs with the same domain, rules are evaluated without the same domain requirement right away.<br>
+    </p>
+
+    <div id="rules-list">
+    </div>
+
+    <div class="actions">
+        <button id="btn-add-rule">+ Add Rule</button>
+        <div class="right-actions">
+            <button id="btn-reset" class="secondary">Reset to Defaults</button>
+            <button id="btn-save" class="primary">Save Preferences</button>
+        </div>
+    </div>
+
+    <div id="status-message"></div>
+</div>
+
+<script src="options.js"></script>
+</body>
+</html>

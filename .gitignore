@@ -1,0 +1,7 @@
+/archive/
+/scr/
+/src/
+/upload/
+/.idea/
+*.txt
+compare.js
