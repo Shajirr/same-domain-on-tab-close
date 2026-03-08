@@ -1,4 +1,4 @@
-let DEBUG = false;
+let DEBUG = true;
 
 let enabled = true; // addon state
 let recent = []; // tabId[] ordered by activation time, most recent at the end
@@ -111,30 +111,67 @@ function shortUrl(url) {
   }
 }
 
-// Modifier logic for resolving specific targets within an array of candidates
-function applyModifier(candidates, modifier) {
+// --- Main functions ---
+
+// Modifier logic for resolving specific targets within an array of candidates.
+function applyModifier(candidates, modifier, { activeIdx, windowTabs } = {}) {
   if (!candidates || candidates.length === 0) return null;
+  const idSet = new Set(candidates.map((c) => c.id));
 
   switch (modifier) {
+    // --- Position-independent ---
     case 'leftmost':
-      return candidates.sort((a, b) => a.index - b.index)[0].id;
+      return [...candidates].sort((a, b) => a.index - b.index)[0].id;
     case 'rightmost':
-      return candidates.sort((a, b) => b.index - a.index)[0].id;
+      return [...candidates].sort((a, b) => b.index - a.index)[0].id;
     case 'oldest':
-      return candidates.sort((a, b) => a.id - b.id)[0].id;
+      return [...candidates].sort((a, b) => a.id - b.id)[0].id;
     case 'newest':
-      return candidates.sort((a, b) => b.id - a.id)[0].id;
+      return [...candidates].sort((a, b) => b.id - a.id)[0].id;
+    case 'random':
+      return candidates[Math.floor(Math.random() * candidates.length)].id;
     case 'mru':
-    default:
       for (let i = recent.length - 1; i >= 0; i--) {
-        const rId = recent[i];
-        if (candidates.some((c) => c.id === rId)) return rId;
+        if (idSet.has(recent[i])) return recent[i];
       }
       return candidates[0].id; // Fallback if no MRU match
+
+    // --- Position-dependent ---
+    case 'adjacent_right': {
+      const t = windowTabs[activeIdx + 1];
+      return t && idSet.has(t.id) ? t.id : null;
+    }
+    case 'adjacent_left': {
+      const t = windowTabs[activeIdx - 1];
+      return t && idSet.has(t.id) ? t.id : null;
+    }
+    case 'right':
+      for (let i = activeIdx + 1; i < windowTabs.length; i++) {
+        if (idSet.has(windowTabs[i].id)) return windowTabs[i].id;
+      }
+      return null;
+    case 'left':
+      for (let i = activeIdx - 1; i >= 0; i--) {
+        if (idSet.has(windowTabs[i].id)) return windowTabs[i].id;
+      }
+      return null;
+    case 'closest':
+    case 'either': {
+      // Expand outward from activeIdx, preferring left on a tie
+      let offset = 1;
+      while (activeIdx - offset >= 0 || activeIdx + offset < windowTabs.length) {
+        const l = windowTabs[activeIdx - offset];
+        const r = windowTabs[activeIdx + offset];
+        if (l && idSet.has(l.id)) return l.id;
+        if (r && idSet.has(r.id)) return r.id;
+        offset++;
+      }
+      return null;
+    }
+    default:
+      return null;
   }
 }
-
-// --- Main functions ---
 
 async function restoreOpenerTabIds(tabs) {
   for (const tab of tabs) {
@@ -198,84 +235,36 @@ async function updateSuccessor() {
     const runRules = (requireSameDomain) => {
       const candidate = (t) => isValidCandidate(t, requireSameDomain);
       const domainTag = requireSameDomain ? '' : ' (any domain)';
+      const ctx = { activeIdx, windowTabs };
 
       // Dynamic priority logic
       for (const rule of focusRules) {
         if (successorId !== null) break;
 
         switch (rule.type) {
-          case 'adjacent':
-            if (rule.modifier === 'left') {
-              // Strictly the immediately neighboring tab to the left
-              const leftAdj = windowTabs[activeIdx - 1];
-              if (leftAdj && candidate(leftAdj)) {
-                successorId = leftAdj.id;
-                reason = `adjacent left${domainTag}`;
-              }
-            } else if (rule.modifier === 'right') {
-              // Strictly the immediately neighboring tab to the right
-              const rightAdj = windowTabs[activeIdx + 1];
-              if (rightAdj && candidate(rightAdj)) {
-                successorId = rightAdj.id;
-                reason = `adjacent right${domainTag}`;
-              }
-            }
+          case 'adjacent': {
+            // 'left'/'right' on the adjacent type means strictly the immediate neighbor,
+            // which maps to the adjacent_left/adjacent_right modifier in applyModifier
+            const mod = rule.modifier === 'left' ? 'adjacent_left' : 'adjacent_right';
+            successorId = applyModifier(windowTabs.filter(candidate), mod, ctx);
+            if (successorId) reason = `adjacent ${rule.modifier}${domainTag}`;
             break;
+          }
 
-          case 'nearest':
-            if (rule.modifier === 'left') {
-              for (let i = activeIdx - 1; i >= 0; i--) {
-                if (candidate(windowTabs[i])) {
-                  successorId = windowTabs[i].id;
-                  reason = `nearest left${domainTag}`;
-                  break;
-                }
-              }
-            } else if (rule.modifier === 'right') {
-              for (let i = activeIdx + 1; i < windowTabs.length; i++) {
-                if (candidate(windowTabs[i])) {
-                  successorId = windowTabs[i].id;
-                  reason = `nearest right${domainTag}`;
-                  break;
-                }
-              }
-            } else if (rule.modifier === 'either') {
-              let offset = 1;
-              while (activeIdx - offset >= 0 || activeIdx + offset < windowTabs.length) {
-                const left = windowTabs[activeIdx - offset];
-                const right = windowTabs[activeIdx + offset];
-                if (left && candidate(left)) {
-                  successorId = left.id;
-                  reason = `nearest either (left)${domainTag}`;
-                  break;
-                }
-                if (right && candidate(right)) {
-                  successorId = right.id;
-                  reason = `nearest either (right)${domainTag}`;
-                  break;
-                }
-                offset++;
-              }
-            }
+          case 'nearest': {
+            // 'either' expands outward; 'left'/'right' scan in one direction
+            successorId = applyModifier(windowTabs.filter(candidate), rule.modifier, ctx);
+            if (successorId) reason = `nearest ${rule.modifier}${domainTag}`;
             break;
+          }
 
-          case 'edge':
-            if (rule.modifier === 'leftmost') {
-              const match = windowTabs.find(candidate);
-              if (match) {
-                successorId = match.id;
-                reason = `edge leftmost${domainTag}`;
-              }
-            } else if (rule.modifier === 'rightmost') {
-              const match = [...windowTabs].reverse().find(candidate);
-              if (match) {
-                successorId = match.id;
-                reason = `edge rightmost${domainTag}`;
-              }
-            }
+          case 'edge': {
+            successorId = applyModifier(windowTabs.filter(candidate), rule.modifier, ctx);
+            if (successorId) reason = `edge ${rule.modifier}${domainTag}`;
             break;
+          }
 
-          case 'parent':
+          case 'parent': {
             if (activeTab.openerTabId !== undefined) {
               const parent = windowTabs.find((t) => t.id === activeTab.openerTabId);
               if (candidate(parent)) {
@@ -284,126 +273,39 @@ async function updateSuccessor() {
               }
             }
             break;
+          }
 
           case 'child': {
             const children = windowTabs.filter((t) => t.openerTabId === activeTabId && candidate(t));
-            if (children.length > 0) {
-              if (rule.modifier === 'adjacent_right') {
-                const rightTab = windowTabs[activeIdx + 1];
-                if (rightTab && children.some((c) => c.id === rightTab.id)) {
-                  successorId = rightTab.id;
-                  reason = `child adjacent right${domainTag}`;
-                }
-              } else if (rule.modifier === 'adjacent_left') {
-                const leftTab = windowTabs[activeIdx - 1];
-                if (leftTab && children.some((c) => c.id === leftTab.id)) {
-                  successorId = leftTab.id;
-                  reason = `child adjacent left${domainTag}`;
-                }
-              } else if (rule.modifier === 'right') {
-                for (let i = activeIdx + 1; i < windowTabs.length; i++) {
-                  if (children.some((c) => c.id === windowTabs[i].id)) {
-                    successorId = windowTabs[i].id;
-                    reason = `child nearest right${domainTag}`;
-                    break;
-                  }
-                }
-              } else if (rule.modifier === 'left') {
-                for (let i = activeIdx - 1; i >= 0; i--) {
-                  if (children.some((c) => c.id === windowTabs[i].id)) {
-                    successorId = windowTabs[i].id;
-                    reason = `child nearest left${domainTag}`;
-                    break;
-                  }
-                }
-              } else if (rule.modifier === 'closest') {
-                const sorted = [...children].sort(
-                  (a, b) => Math.abs(a.index - activeIdx) - Math.abs(b.index - activeIdx),
-                );
-                successorId = sorted[0].id;
-                reason = `child closest${domainTag}`;
-              } else {
-                successorId = applyModifier(children, rule.modifier);
-                if (successorId) reason = `child ${rule.modifier}${domainTag}`;
-              }
+            successorId = applyModifier(children, rule.modifier, ctx);
+            if (successorId) reason = `child ${rule.modifier}${domainTag}`;
+            break;
+          }
+
+          case 'sibling': {
+            if (activeTab.openerTabId !== undefined) {
+              const siblings = windowTabs.filter((t) => t.openerTabId === activeTab.openerTabId && candidate(t));
+              successorId = applyModifier(siblings, rule.modifier, ctx);
+              if (successorId) reason = `sibling ${rule.modifier}${domainTag}`;
             }
             break;
           }
 
-          case 'sibling':
-            if (activeTab.openerTabId !== undefined) {
-              const siblings = windowTabs.filter((t) => t.openerTabId === activeTab.openerTabId && candidate(t));
-              if (siblings.length > 0) {
-                if (rule.modifier === 'adjacent_right') {
-                  const rightTab = windowTabs[activeIdx + 1];
-                  if (rightTab && siblings.some((s) => s.id === rightTab.id)) {
-                    successorId = rightTab.id;
-                    reason = `right sibling${domainTag}`;
-                  }
-                } else if (rule.modifier === 'adjacent_left') {
-                  const leftTab = windowTabs[activeIdx - 1];
-                  if (leftTab && siblings.some((s) => s.id === leftTab.id)) {
-                    successorId = leftTab.id;
-                    reason = `left sibling${domainTag}`;
-                  }
-                } else if (rule.modifier === 'right') {
-                  for (let i = activeIdx + 1; i < windowTabs.length; i++) {
-                    if (siblings.some((s) => s.id === windowTabs[i].id)) {
-                      successorId = windowTabs[i].id;
-                      reason = `sibling nearest right${domainTag}`;
-                      break;
-                    }
-                  }
-                } else if (rule.modifier === 'left') {
-                  for (let i = activeIdx - 1; i >= 0; i--) {
-                    if (siblings.some((s) => s.id === windowTabs[i].id)) {
-                      successorId = windowTabs[i].id;
-                      reason = `sibling nearest left${domainTag}`;
-                      break;
-                    }
-                  }
-                } else if (rule.modifier === 'closest') {
-                  const sortedSiblings = [...siblings].sort(
-                    (a, b) => Math.abs(a.index - activeIdx) - Math.abs(b.index - activeIdx),
-                  );
-                  successorId = sortedSiblings[0].id;
-                  reason = `closest sibling${domainTag}`;
-                } else if (['mru', 'leftmost', 'rightmost', 'oldest', 'newest'].includes(rule.modifier)) {
-                  successorId = applyModifier(siblings, rule.modifier);
-                  if (successorId) reason = `sibling ${rule.modifier}${domainTag}`;
-                }
-              }
-            }
+          case 'mru': {
+            successorId = applyModifier(windowTabs.filter(candidate), 'mru', ctx);
+            if (successorId) reason = `mru${domainTag}`;
             break;
-
-          case 'mru':
-            for (let i = recent.length - 1; i >= 0; i--) {
-              const rId = recent[i];
-              const t = windowTabs.find((tab) => tab.id === rId);
-              if (candidate(t)) {
-                successorId = rId;
-                reason = `mru${domainTag}`;
-                break;
-              }
-            }
-            break;
+          }
 
           case 'random': {
-            const pool = windowTabs.filter(candidate);
-            if (pool.length > 0) {
-              successorId = pool[Math.floor(Math.random() * pool.length)].id;
-              reason = `random${domainTag}`;
-            }
+            successorId = applyModifier(windowTabs.filter(candidate), 'random');
+            if (successorId) reason = `random${domainTag}`;
             break;
           }
 
           case 'oldest': {
-            // Oldest by tab id (lower id = opened earlier)
-            const pool = windowTabs.filter(candidate);
-            if (pool.length > 0) {
-              successorId = pool.reduce((a, b) => (a.id < b.id ? a : b)).id;
-              reason = `oldest${domainTag}`;
-            }
+            successorId = applyModifier(windowTabs.filter(candidate), 'oldest');
+            if (successorId) reason = `oldest${domainTag}`;
             break;
           }
         }
@@ -425,10 +327,10 @@ async function updateSuccessor() {
 
     // Apply the successor
     if (successorId !== null) {
-      // Firefox chain-follows successors transitively on tab close: if A→B→C,
-      // closing A activates B but immediately also follows B→C, causing two hops.
-      // Fix: always clear B's stored successor before setting A→B. When B becomes
-      // active, updateSuccessor will compute the correct successor for it then.
+      // Firefox chain-follows successors transitively on tab close: closing A→B also
+      // activates B then immediately follows B's stored successor, causing two hops.
+      // Unconditionally clear B's successor here — when B becomes active,
+      // updateSuccessor will compute the correct one for it from scratch.
       await browser.tabs.update(successorId, { successorTabId: -1 }).catch(() => {});
 
       await browser.tabs.update(activeTabId, { successorTabId: successorId });
